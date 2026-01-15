@@ -105,7 +105,7 @@ const ChatContainer = () => {
               onSelectConversation={(id) => convHook.loadConversation(id).then(setMessages)} 
               onNewConversation={() => {
                 convHook.createNewConversation();
-                setMessages([{ id: "init", content: "Manda a boa!", role: "assistant" }]);
+                setMessages([{ id: "init", content: "ÍRIS Ativada. Como posso te ajudar hoje?", role: "assistant" }]);
               }} 
               onDeleteConversation={convHook.deleteConversation}
             />
