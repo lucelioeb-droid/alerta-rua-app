@@ -26,95 +26,84 @@ const ChatContainer = () => {
   Diretrizes:
   - Linguagem simples, direta e frases curtas.
   - Se o usuário apenas saudar (Oi, Boa noite), responda naturalmente sem pesquisar nada.
-  - Nunca confunda seu nome com criptomoedas ou leitura de íris.
-  - Use a pesquisa web apenas para fatos, clima ou notícias. Se a busca disser algo, confie nela.
-  - Aceite correções do usuário na hora.`;
+  - Nunca invente informações. Se não souber, use a busca.
+  - Você é uma assistente de IA, mas sua personalidade é calorosa.`;
 
-  // Carrega o histórico e evita que mensagens sumam
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
   useEffect(() => {
-    if (convHook.currentConversationId) {
-      convHook.loadConversation(convHook.currentConversationId).then(msgs => {
-        if (msgs) setMessages(msgs);
-      });
+    if (convHook.currentConversation?.messages) {
+      setMessages(convHook.currentConversation.messages);
+    } else {
+      setMessages([]);
     }
-  }, [convHook.currentConversationId]);
+  }, [convHook.currentConversation]);
 
-  const handleSend = useCallback(async (content: string) => {
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isTyping]);
+
+  const handleSendMessage = async (content: string) => {
     if (!content.trim()) return;
 
-    const userMsg = { id: Date.now().toString(), content, role: "user" };
-    const updatedMessages = [...messages, userMsg];
+    const userMessage = { id: Date.now().toString(), content, role: "user" as const };
+    const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
     setIsTyping(true);
 
     try {
-      // 1. Tenta funções locais (Spotify, Mapas, Discador, Youtube)
-      const brainResponse = await irisBrain(content, async (t) => t);
+      // 1. Decisão da ÍRIS: Precisa de busca?
+      const searchAnalysis = await irisBrain.analyzeNeedForSearch(content, messages);
       
-      if (brainResponse) {
-        const assistantMsg = { id: "a" + Date.now(), content: brainResponse, role: "assistant" };
-        setMessages([...updatedMessages, assistantMsg]);
-        if (user) await convHook.saveMessagesToConversation([...updatedMessages, assistantMsg]);
-      } else {
-        // 2. Só pesquisa se houver necessidade real
-        const needsSearch = /(clima|tempo|notícia|quem|onde|preço|cotação|política|como está)/i.test(content);
-        let extraInfo = "";
-
-        if (needsSearch && content.length > 5) {
-            // Refina a busca para não pegar lixo sobre cripto
-            const query = content.toLowerCase().includes("você") 
-              ? "quem é a inteligência artificial ÍRIS do Lucélio" 
-              : `${content} hoje 2026`;
-            extraInfo = await webSearch(query);
-        }
-        
-        const response = await grokService.chat([
-          { role: "system", content: IRIS_PROMPT },
-          ...updatedMessages, 
-          { role: "user", content: extraInfo ? `DADOS REAIS (HOJE): ${extraInfo}\n\nPERGUNTA: ${content}` : content }
-        ].map(m => ({ role: m.role, content: m.content })));
-
-        const assistantMsg = { id: "a" + Date.now(), content: response, role: "assistant" };
-        setMessages([...updatedMessages, assistantMsg]);
-        
-        if (user) await convHook.saveMessagesToConversation([...updatedMessages, assistantMsg]);
+      let context = "";
+      if (searchAnalysis.shouldSearch) {
+        const searchResults = await webSearch.search(searchAnalysis.query);
+        context = `\n\nResultados da busca em tempo real:\n${searchResults}`;
       }
-    } catch (e) {
-      console.error(e);
+
+      // 2. Resposta via Grok
+      const response = await grokService.chat([
+        { role: "system", content: IRIS_PROMPT + context },
+        ...updatedMessages.map(m => ({ role: m.role, content: m.content }))
+      ]);
+
+      const assistantMessage = { 
+        id: (Date.now() + 1).toString(), 
+        content: response, 
+        role: "assistant" as const 
+      };
+
+      const finalMessages = [...updatedMessages, assistantMessage];
+      setMessages(finalMessages);
+      
+      // 3. Salva no Firebase (Agora com o ID correto)
+      if (convHook.currentConversation?.id) {
+        await convHook.updateMessages(convHook.currentConversation.id, finalMessages);
+      }
+    } catch (error) {
+      console.error("Erro na ÍRIS:", error);
     } finally {
       setIsTyping(false);
     }
-  }, [messages, user, convHook]);
+  };
 
-  const { isActive, toggleAlwaysOn } = useAlwaysOnVoice(handleSend);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+  const { isActive } = useAlwaysOnVoice(handleSendMessage);
 
   return (
-    <div className="flex h-screen w-full bg-[#0a0f1a] overflow-hidden">
-      {/* SIDEBAR QUE EMPURRA O CHAT (80/20) */}
-      {convHook.isSidebarOpen && (
-        <aside className="w-80 h-full flex-shrink-0 border-r border-white/5 bg-black/40 backdrop-blur-xl z-20">
-          {user && (
-            <ConversationSidebar 
-              user={user} 
-              conversations={convHook.conversations || []} 
-              currentConversationId={convHook.currentConversationId} 
-              onSelectConversation={(id) => convHook.loadConversation(id).then(setMessages)} 
-              onNewConversation={() => {
-                convHook.createNewConversation();
-                setMessages([{ id: "init", content: "ÍRIS Ativada. Como posso te ajudar hoje?", role: "assistant" }]);
-              }} 
-              onDeleteConversation={convHook.deleteConversation}
-            />
-          )}
-        </aside>
-      )}
+    <div className="flex h-screen bg-[#050505] text-white overflow-hidden font-sans">
+      <ConversationSidebar 
+        isOpen={convHook.isSidebarOpen} 
+        onClose={() => convHook.setIsSidebarOpen(false)}
+        conversations={convHook.conversations}
+        currentId={convHook.currentConversation?.id}
+        onSelect={convHook.selectConversation}
+        onDelete={convHook.deleteConversation}
+        onNew={convHook.createNewConversation}
+      />
 
-      {/* ÁREA DE CHAT - FLEX-1 GARANTE QUE O CHAT USE O ESPAÇO RESTANTE */}
-      <div className="flex flex-col flex-1 relative min-w-0 transition-all duration-300">
+      <div className="flex-1 flex flex-col relative w-full">
         <header className="flex items-center justify-between px-6 py-4 bg-black/60 border-b border-white/10">
           <div className="flex items-center gap-4">
             <button onClick={convHook.toggleSidebar} className="p-2 hover:bg-cyan-500/10 rounded-lg text-cyan-400">
@@ -132,19 +121,26 @@ const ChatContainer = () => {
         
         <main className="flex-1 overflow-y-auto p-4 md:p-8 space-y-4 custom-scrollbar">
           {messages.map((m) => <ChatMessage key={m.id} content={m.content} role={m.role} />)}
-          {isActive && (
-            <div className="flex justify-center p-2">
-              <div className="bg-cyan-500/20 text-cyan-400 text-[10px] px-4 py-2 rounded-full animate-pulse border border-cyan-500/30">
-                ÍRIS OUVINDO...
-              </div>
+          {isTyping && (
+            <div className="flex gap-2 p-4 bg-white/5 rounded-2xl w-fit animate-pulse">
+              <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" />
+              <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce [animation-delay:0.2s]" />
+              <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce [animation-delay:0.4s]" />
             </div>
           )}
           <div ref={messagesEndRef} />
         </main>
 
-        <footer className="p-4 md:p-6 bg-transparent">
+        <footer className="p-4 md:p-8 bg-gradient-to-t from-black via-black/80 to-transparent">
           <div className="max-w-4xl mx-auto">
-            <ChatInput onSend={handleSend} onMicClick={toggleAlwaysOn} isMicActive={isActive} disabled={isTyping} />
+            <ChatInput 
+              onSend={handleSendMessage} 
+              disabled={isTyping} 
+              placeholder="ÍRIS ONLINE: Como posso ajudar agora?"
+            />
+            <p className="text-center text-[10px] text-white/30 mt-4 tracking-widest uppercase">
+              Powered by Grok & Google Search • 2026
+            </p>
           </div>
         </footer>
       </div>
